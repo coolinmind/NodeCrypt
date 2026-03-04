@@ -23,6 +23,8 @@ import {
 import { t } from './util.i18n.js';
 let roomsData = [];
 let activeRoomIndex = -1;
+// 存储当前正在输入的用户集合
+let typingUsers = new Set();
 
 // Get a new room data object
 // 获取一个新的房间数据对象
@@ -358,23 +360,49 @@ export function updateTypingStatus(userName, isTyping) {
 	let typingIndicator = document.getElementById('typing-indicator');
 	
 	if (isTyping) {
-		// Create typing indicator if it doesn't exist
-		if (!typingIndicator) {
-			typingIndicator = document.createElement('div');
-			typingIndicator.id = 'typing-indicator';
-			typingIndicator.className = 'typing-indicator';
-			// 将指示器添加到输入框包装器内部，继承相同的宽度和居中效果
-			const chatInputWrapper = document.querySelector('.chat-input-wrapper');
-			if (chatInputWrapper) {
-				chatInputWrapper.insertBefore(typingIndicator, chatInputWrapper.firstChild);
-			}
+		// Add user to typing set
+		typingUsers.add(userName);
+	} else {
+		// Remove user from typing set
+		typingUsers.delete(userName);
+	}
+	
+	// Create typing indicator if it doesn't exist
+	if (!typingIndicator) {
+		typingIndicator = document.createElement('div');
+		typingIndicator.id = 'typing-indicator';
+		typingIndicator.className = 'typing-indicator';
+		// 将指示器添加到输入框包装器内部，继承相同的宽度和居中效果
+		const chatInputWrapper = document.querySelector('.chat-input-wrapper');
+		if (chatInputWrapper) {
+			chatInputWrapper.insertBefore(typingIndicator, chatInputWrapper.firstChild);
+		}
+	}
+	
+	// Update typing indicator text based on number of typing users
+	if (typingUsers.size > 0) {
+		const typingUsersArray = Array.from(typingUsers);
+		let typingText = '';
+		
+		if (typingUsersArray.length === 1) {
+			// Single user typing - Telegram style: "User is typing"
+			typingText = t('system.is_typing', '{user} is typing').replace('{user}', typingUsersArray[0]);
+		} else if (typingUsersArray.length === 2) {
+			// Two users typing - Telegram style: "User1 and User2 are typing"
+			typingText = t('system.are_typing', '{user1} and {user2} are typing')
+				.replace('{user1}', typingUsersArray[0])
+				.replace('{user2}', typingUsersArray[1]);
+		} else {
+			// Multiple users typing - Telegram style: "User1, User2, and others are typing"
+			typingText = t('system.others_typing', '{user1}, {user2}, and others are typing')
+				.replace('{user1}', typingUsersArray[0])
+				.replace('{user2}', typingUsersArray[1]);
 		}
 		
-		// Update typing indicator text
-		typingIndicator.textContent = `${userName} 正在输入...`;
+		typingIndicator.textContent = typingText;
 		typingIndicator.style.display = 'block';
 	} else {
-		// Hide typing indicator
+		// Hide typing indicator when no one is typing
 		if (typingIndicator) {
 			typingIndicator.style.display = 'none';
 		}
