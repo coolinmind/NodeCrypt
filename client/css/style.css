@@ -1697,6 +1697,36 @@ flex-direction: column;
 	}
 }
 
+/* Typing indicator styles */
+.typing-indicator {
+	padding: 6px 12px;
+	margin: 0 0 8px 0;
+	background: #e3f2fd;
+	border-radius: 12px;
+	font-size: 14px;
+	color: #1976d2;
+	text-align: center;
+	animation: fadeIn 0.3s ease;
+	font-weight: 500;
+	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+	width: 100%;
+	box-sizing: border-box;
+}
+
+@keyframes fadeIn {
+	from { opacity: 0; transform: translateY(-10px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+
+/* 手机端适配 */
+@media (max-width:768px) {
+	.typing-indicator {
+		margin: 0 0 6px 0;
+		padding: 5px 10px;
+		font-size: 13px;
+	}
+}
+
 .file-download-btn {
 	position: relative;
 	overflow: hidden;

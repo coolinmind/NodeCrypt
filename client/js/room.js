@@ -244,6 +244,21 @@ export function handleClientMessage(idx, msg) {
 
 	let msgType = msg.type || 'text';
 
+	// Handle typing status messages
+	if (msgType === 'typing' || msgType === 'typing_private') {
+		// Only handle if it's the active room
+		if (activeRoomIndex === idx) {
+			let realUserName = msg.userName;
+			if (!realUserName && msg.clientId && newRd.userMap[msg.clientId]) {
+				realUserName = newRd.userMap[msg.clientId].userName || newRd.userMap[msg.clientId].username || newRd.userMap[msg.clientId].name;
+			}
+			
+			// Update typing status in UI
+			updateTypingStatus(realUserName, msg.data);
+		}
+		return; // Typing messages are fully handled.
+	}
+
 	// Handle file messages
 	if (msgType.startsWith('file_')) {
 		// Part 1: Update message history and send notifications (for 'file_start' type)
@@ -337,6 +352,35 @@ export function handleClientMessage(idx, msg) {
 	}
 }
 
+// Update typing status in UI
+// 更新输入状态UI
+export function updateTypingStatus(userName, isTyping) {
+	let typingIndicator = document.getElementById('typing-indicator');
+	
+	if (isTyping) {
+		// Create typing indicator if it doesn't exist
+		if (!typingIndicator) {
+			typingIndicator = document.createElement('div');
+			typingIndicator.id = 'typing-indicator';
+			typingIndicator.className = 'typing-indicator';
+			// 将指示器添加到输入框包装器内部，继承相同的宽度和居中效果
+			const chatInputWrapper = document.querySelector('.chat-input-wrapper');
+			if (chatInputWrapper) {
+				chatInputWrapper.insertBefore(typingIndicator, chatInputWrapper.firstChild);
+			}
+		}
+		
+		// Update typing indicator text
+		typingIndicator.textContent = `${userName} 正在输入...`;
+		typingIndicator.style.display = 'block';
+	} else {
+		// Hide typing indicator
+		if (typingIndicator) {
+			typingIndicator.style.display = 'none';
+		}
+	}
+}
+
 // Toggle private chat with a user
 // 切换与某用户的私聊
 export function togglePrivateChat(targetId, targetName) {
@@ -375,6 +419,33 @@ export function exitRoom() {
 	}
 	return false
 }
+
+// 定时清理5分钟前的聊天记录
+// Clean up chat messages older than 5 minutes
+function cleanupOldMessages() {
+	const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+	let needsRender = false;
+	
+	roomsData.forEach((room, index) => {
+		const originalLength = room.messages.length;
+		room.messages = room.messages.filter(msg => {
+			return msg.timestamp && msg.timestamp > fiveMinutesAgo;
+		});
+		
+		// 如果当前房间是激活状态且消息被清理了，需要重新渲染
+		if (index === activeRoomIndex && room.messages.length !== originalLength) {
+			needsRender = true;
+		}
+	});
+	
+	if (needsRender) {
+		renderChatArea();
+	}
+}
+
+// 启动定时清理器，每30秒执行一次
+// Start cleanup timer, run every 30 seconds
+setInterval(cleanupOldMessages, 30000);
 
 export { roomsData, activeRoomIndex };
 

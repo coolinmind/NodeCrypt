@@ -179,6 +179,59 @@ window.addEventListener('DOMContentLoaded', () => {
 				sendMessage();
 			}
 		});
+		
+		// 输入状态检测
+		let typingTimeout;
+		let isTyping = false;
+		
+		input.addEventListener('input', () => {
+			const rd = roomsData[activeRoomIndex];
+			if (!rd || !rd.chat) return;
+			
+			// 清除之前的定时器
+			clearTimeout(typingTimeout);
+			
+			// 如果还没有发送过"正在输入"状态，则发送
+			if (!isTyping) {
+				isTyping = true;
+				sendTypingStatus(true);
+			}
+			
+			// 设置新的定时器，2秒后发送"停止输入"状态
+			typingTimeout = setTimeout(() => {
+				isTyping = false;
+				sendTypingStatus(false);
+			}, 2000);
+		});
+		
+		// 发送输入状态的函数
+		function sendTypingStatus(typing) {
+			const rd = roomsData[activeRoomIndex];
+			if (!rd || !rd.chat) return;
+			
+			if (rd.privateChatTargetId) {
+				// 私聊输入状态
+				const targetClient = rd.chat.channel[rd.privateChatTargetId];
+				if (targetClient && targetClient.shared) {
+					const clientMessagePayload = {
+						a: 'm',
+						t: 'typing_private',
+						d: typing
+					};
+					const encryptedClientMessage = rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
+					const serverRelayPayload = {
+						a: 'c',
+						p: encryptedClientMessage,
+						c: rd.privateChatTargetId
+					};
+					const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
+					rd.chat.sendMessage(encryptedMessageForServer);
+				}
+			} else {
+				// 公共频道输入状态
+				rd.chat.sendChannelMessage('typing', typing);
+			}
+		}
 	}
 	
 	// 发送消息的统一函数

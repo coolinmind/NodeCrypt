@@ -1,4 +1,4 @@
-﻿// NodeCrypt core cryptographic client for secure chat
+// NodeCrypt core cryptographic client for secure chat
 // NodeCrypt 安全聊天的核心加密客户端
 
 import {
@@ -332,10 +332,12 @@ class NodeCrypt {
 					}
 				}
 				return
-			}			if (!this.channel[serverDecrypted.c].username) {
+			}
+			// 对于 typing 消息，即使没有用户名也处理
+			if (!this.channel[serverDecrypted.c].username && clientDecrypted.t !== 'typing' && clientDecrypted.t !== 'typing_private') {
 				return
 			}
-			if (clientDecrypted.a === 'm' && this.isString(clientDecrypted.t) && (this.isString(clientDecrypted.d) || this.isObject(clientDecrypted.d))) {
+			if (clientDecrypted.a === 'm' && this.isString(clientDecrypted.t) && (this.isString(clientDecrypted.d) || this.isObject(clientDecrypted.d) || typeof clientDecrypted.d === 'boolean')) {
 				if (this.callbacks.onClientMessage) {
 					try {
 						this.callbacks.onClientMessage({
