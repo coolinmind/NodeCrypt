@@ -372,10 +372,14 @@ export function updateTypingStatus(userName, isTyping) {
 		typingIndicator = document.createElement('div');
 		typingIndicator.id = 'typing-indicator';
 		typingIndicator.className = 'typing-indicator';
-		// 将指示器添加到输入框包装器内部，继承相同的宽度和居中效果
-		const chatInputWrapper = document.querySelector('.chat-input-wrapper');
-		if (chatInputWrapper) {
-			chatInputWrapper.insertBefore(typingIndicator, chatInputWrapper.firstChild);
+		// 创建一个span元素来容纳文本内容
+		const textSpan = document.createElement('span');
+		typingIndicator.appendChild(textSpan);
+		// 将指示器添加到main容器中，放在chat-area上方
+		const mainContainer = document.querySelector('.main');
+		const chatArea = document.getElementById('chat-area');
+		if (mainContainer && chatArea) {
+			mainContainer.insertBefore(typingIndicator, chatArea);
 		}
 	}
 	
@@ -399,7 +403,11 @@ export function updateTypingStatus(userName, isTyping) {
 				.replace('{user2}', typingUsersArray[1]);
 		}
 		
-		typingIndicator.textContent = typingText;
+		// 将文本内容设置到span元素中
+		const textSpan = typingIndicator.querySelector('span');
+		if (textSpan) {
+			textSpan.textContent = typingText;
+		}
 		typingIndicator.style.display = 'block';
 	} else {
 		// Hide typing indicator when no one is typing
