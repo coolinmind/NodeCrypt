@@ -225,6 +225,80 @@ export function handleClientLeft(idx, clientId) {
 		text: msg
 	});
 	if (activeRoomIndex === idx) addSystemMsg(msg, true);
+	
+	// Remove the user from typingUsers set if they were typing when they left
+	const potentialUserNames = new Set();
+	if (user) {
+		if (user.userName) potentialUserNames.add(user.userName);
+		if (user.username) potentialUserNames.add(user.username);
+		if (user.name) potentialUserNames.add(user.name);
+	}
+	
+	let wasTyping = false;
+	for (const potentialName of potentialUserNames) {
+		if (typingUsers.has(potentialName)) {
+			typingUsers.delete(potentialName);
+			wasTyping = true;
+		}
+	}
+	
+	if (!wasTyping && user) {
+		const userDisplayName = user.userName || user.username || user.name;
+		if (userDisplayName) {
+			for (const typingUserName of typingUsers) {
+				if (typingUserName === userDisplayName) {
+					typingUsers.delete(typingUserName);
+					wasTyping = true;
+					break;
+				}
+			}
+		}
+	}
+	
+	if (wasTyping && activeRoomIndex === idx) {
+		let typingIndicator = document.getElementById('typing-indicator');
+		
+		if (typingUsers.size > 0) {
+			const typingUsersArray = Array.from(typingUsers);
+			let typingText = '';
+			
+			if (typingUsersArray.length === 1) {
+				typingText = t('system.is_typing', '{user} is typing').replace('{user}', typingUsersArray[0]);
+			} else if (typingUsersArray.length === 2) {
+				typingText = t('system.are_typing', '{user1} and {user2} are typing')
+					.replace('{user1}', typingUsersArray[0])
+					.replace('{user2}', typingUsersArray[1]);
+			} else {
+				typingText = t('system.others_typing', '{user1}, {user2}, and others are typing')
+					.replace('{user1}', typingUsersArray[0])
+					.replace('{user2}', typingUsersArray[1]);
+			}
+			
+			if (!typingIndicator) {
+				typingIndicator = document.createElement('div');
+				typingIndicator.id = 'typing-indicator';
+				typingIndicator.className = 'typing-indicator';
+				const textSpan = document.createElement('span');
+				typingIndicator.appendChild(textSpan);
+				const mainContainer = document.querySelector('.main');
+				const chatArea = document.getElementById('chat-area');
+				if (mainContainer && chatArea) {
+					mainContainer.insertBefore(typingIndicator, chatArea);
+				}
+			}
+			
+			const textSpan = typingIndicator.querySelector('span');
+			if (textSpan) {
+				textSpan.textContent = typingText;
+			}
+			typingIndicator.style.display = 'block';
+		} else {
+			if (typingIndicator) {
+				typingIndicator.style.display = 'none';
+			}
+		}
+	}
+	
 	rd.userList = rd.userList.filter(u => u.clientId !== clientId);
 	delete rd.userMap[clientId];
 	if (activeRoomIndex === idx) {
