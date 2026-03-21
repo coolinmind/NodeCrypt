@@ -584,12 +584,11 @@ flex-direction: column;
 	color: #999;
 	margin-left: 0;
 	align-self: flex-end;
-	position: absolute;
-	right: 3px;
-	bottom: 7px;
-	display: inline-block;
+	position: static;
+	display: inline-flex;
 	background: transparent;
 	line-height: 1;
+	margin-top: 8px;
 }
 
 .bubble.me {
@@ -597,7 +596,7 @@ flex-direction: column;
 	color: #222;
 	margin-left: auto;
 	border-bottom-right-radius: 0px;
-	padding: 10px 39px 7px 10px;
+	padding: 10px 12px 9px 10px;
 }
 
 .bubble.other {
@@ -606,17 +605,98 @@ flex-direction: column;
 	color: #222;
 	border-bottom-left-radius: 0px;
 	margin-left: 0px;
-	padding: 1px 40px 5px 10px;
-}
-
-.bubble.other .bubble-meta {
-	right: 4px;
+	padding: 1px 12px 7px 10px;
 }
 
 .bubble .bubble-meta {
 	font-size: 12px;
 	color: #999;
 	text-align: right;
+}
+
+.bubble-meta-read {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.bubble-time {
+	line-height: 1;
+}
+
+.read-status {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.read-status-indicator {
+	width: 14px;
+	height: 14px;
+	box-sizing: border-box;
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: transform 0.2s ease;
+}
+
+.read-status-svg {
+	width: 14px;
+	height: 14px;
+	display: block;
+}
+
+.read-status-indicator,
+.read-status-svg,
+.read-status-check {
+	transform-origin: center;
+}
+
+.read-status-ring,
+.read-status-ring-full {
+	stroke: #22c55e;
+	stroke-width: 1.5;
+}
+
+.read-status-ring {
+	fill: none;
+}
+
+.read-status-ring-full {
+	fill: #22c55e;
+}
+
+.read-status-sector {
+	fill: #22c55e;
+}
+
+.bubble-meta-read.partially-read .read-status-indicator {
+	transform: scale(1.02);
+}
+
+.read-status-complete {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.read-status-check {
+	width: 10px;
+	height: 10px;
+	display: block;
+}
+
+.read-status-check-path {
+	fill: none;
+	stroke: #fff;
+	stroke-width: 2.2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.bubble-meta-read.all-read .bubble-time {
+	color: #16a34a;
 }
 
 /* Special positioning for file message bubbles */
@@ -631,11 +711,11 @@ flex-direction: column;
 /* Remove right padding for file message bubbles since timestamp is not absolute */
 /* 移除文件消息气泡的右边距，因为时间戳不是绝对定位 */
 .bubble.me:has(.file-message) {
-	padding: 10px 10px 7px 10px;
+	padding: 10px 10px 9px 10px;
 }
 
 .bubble.other:has(.file-message) {
-	padding: 1px 10px 5px 10px;
+	padding: 1px 10px 7px 10px;
 }
 
 /* Fallback for browsers that don't support :has() */
@@ -650,11 +730,11 @@ flex-direction: column;
 /* Fallback: Remove right padding for file message bubbles */
 /* 后备方案：移除文件消息气泡的右边距 */
 .bubble.me.file-bubble {
-	padding: 10px 10px 7px 10px;
+	padding: 10px 10px 9px 10px;
 }
 
 .bubble.other.file-bubble {
-	padding: 1px 10px 5px 10px;
+	padding: 1px 10px 7px 10px;
 }
 
 .bubble-other-wrap {

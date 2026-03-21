@@ -5,6 +5,12 @@ import {
 	sha256
 } from 'js-sha256';
 import {
+	createClientSessionId
+} from './util.message.js';
+import {
+	normalizeRoomName
+} from './util.room.js';
+import {
 	ec as elliptic
 } from 'elliptic';
 import {
@@ -37,6 +43,7 @@ class NodeCrypt {
 			onClientMessage: callbacks.onClientMessage || null,
 		};
 		this.SERVER_KEY_STORAGE = 'nodecrypt_server_key';
+		this.clientSessionId = createClientSessionId();
 		try {
 			this.clientEc = new elliptic('curve25519')
 		} catch (error) {
@@ -77,9 +84,10 @@ class NodeCrypt {
 	setCredentials(username, channel, password) {
 		this.logEvent('setCredentials');
 		try {
+			const normalizedChannel = normalizeRoomName(channel);
 			this.credentials = {
 				username: username,
-				channel: sha256(channel),
+				channel: sha256(normalizedChannel),
 				password: sha256(password)
 			}
 		} catch (error) {
@@ -270,7 +278,8 @@ class NodeCrypt {
 					if (this.channel[clientId].shared && this.channel[clientId].username) {
 						clients.push({
 							clientId: clientId,
-							username: this.channel[clientId].username
+							username: this.channel[clientId].username,
+							sessionId: this.channel[clientId].sessionId || null
 						})
 					}
 				}
@@ -304,7 +313,10 @@ class NodeCrypt {
 					a: 'c',
 					p: this.encryptClientMessage({
 						a: 'u',
-						p: this.credentials.username
+						p: {
+							name: this.credentials.username,
+							sessionId: this.clientSessionId
+						}
 					}, this.channel[serverDecrypted.c].shared),
 					c: serverDecrypted.c
 				}, this.serverShared))
@@ -319,13 +331,28 @@ class NodeCrypt {
 			if (!this.isObject(clientDecrypted) || !this.isString(clientDecrypted.a)) {
 				return
 			}
-			if (clientDecrypted.a === 'u' && this.isString(clientDecrypted.p) && clientDecrypted.p.match(/\S+/) && !this.channel[serverDecrypted.c].username) {
-				this.channel[serverDecrypted.c].username = clientDecrypted.p.replace(/^\s+/, '').replace(/\s+$/, '');
+			if (clientDecrypted.a === 'u' && !this.channel[serverDecrypted.c].username) {
+				let nextUserName = null;
+				let nextSessionId = null;
+				if (this.isString(clientDecrypted.p) && clientDecrypted.p.match(/\S+/)) {
+					nextUserName = clientDecrypted.p.replace(/^\s+/, '').replace(/\s+$/, '');
+				} else if (this.isObject(clientDecrypted.p) && this.isString(clientDecrypted.p.name) && clientDecrypted.p.name.match(/\S+/)) {
+					nextUserName = clientDecrypted.p.name.replace(/^\s+/, '').replace(/\s+$/, '');
+					if (this.isString(clientDecrypted.p.sessionId) && clientDecrypted.p.sessionId.match(/\S+/)) {
+						nextSessionId = clientDecrypted.p.sessionId.replace(/^\s+/, '').replace(/\s+$/, '');
+					}
+				}
+				if (!nextUserName) {
+					return
+				}
+				this.channel[serverDecrypted.c].username = nextUserName;
+				this.channel[serverDecrypted.c].sessionId = nextSessionId;
 				if (this.callbacks.onClientSecured) {
 					try {
 						this.callbacks.onClientSecured({
 							clientId: serverDecrypted.c,
-							username: this.channel[serverDecrypted.c].username
+							username: this.channel[serverDecrypted.c].username,
+							sessionId: this.channel[serverDecrypted.c].sessionId || null
 						})
 					} catch (error) {
 						this.logEvent('onMessage-client-secured-callback', error, 'error')
@@ -343,8 +370,12 @@ class NodeCrypt {
 						this.callbacks.onClientMessage({
 							clientId: serverDecrypted.c,
 							username: this.channel[serverDecrypted.c].username,
+							sessionId: this.channel[serverDecrypted.c].sessionId || null,
 							type: clientDecrypted.t,
-							data: clientDecrypted.d
+							data: clientDecrypted.d,
+							messageId: this.isString(clientDecrypted.i) ? clientDecrypted.i : null,
+							timestamp: typeof clientDecrypted.s === 'number' ? clientDecrypted.s : null,
+							senderSessionId: this.isString(clientDecrypted.ss) ? clientDecrypted.ss : null
 						})
 					} catch (error) {
 						this.logEvent('onMessage-client-message-callback', error, 'error')
@@ -483,17 +514,21 @@ class NodeCrypt {
 
 	// Send a message to all channels
 	// 向所有频道发送消息
-	sendChannelMessage(type, data) {
+	sendChannelMessage(type, data, options = {}) {
 		if (this.serverShared) {
 			try {
 				let payloads = {};
+				const clientPayload = {
+					a: 'm',
+					t: type,
+					d: data
+				};
+				if (options.messageId) clientPayload.i = options.messageId;
+				if (typeof options.timestamp === 'number') clientPayload.s = options.timestamp;
+				if (options.senderSessionId) clientPayload.ss = options.senderSessionId;
 				for (const clientId in this.channel) {
 					if (this.channel[clientId].shared && this.channel[clientId].username) {
-						payloads[clientId] = this.encryptClientMessage({
-							a: 'm',
-							t: type,
-							d: data
-						}, this.channel[clientId].shared);
+						payloads[clientId] = this.encryptClientMessage(clientPayload, this.channel[clientId].shared);
 						if (payloads[clientId].length === 0) {
 							return (false)
 						}
@@ -513,6 +548,39 @@ class NodeCrypt {
 			} catch (error) {
 				this.logEvent('sendChannelMessage', error, 'error')
 			}
+		}
+		return (false)
+	}
+
+	sendClientMessage(clientId, type, data, options = {}) {
+		if (!this.serverShared || !clientId || !this.channel[clientId] || !this.channel[clientId].shared) {
+			return (false)
+		}
+		try {
+			const clientPayload = {
+				a: 'm',
+				t: type,
+				d: data
+			};
+			if (options.messageId) clientPayload.i = options.messageId;
+			if (typeof options.timestamp === 'number') clientPayload.s = options.timestamp;
+			if (options.senderSessionId) clientPayload.ss = options.senderSessionId;
+			const encryptedClientMessage = this.encryptClientMessage(clientPayload, this.channel[clientId].shared);
+			if (!encryptedClientMessage) {
+				return (false)
+			}
+			const encryptedMessageForServer = this.encryptServerMessage({
+				a: 'c',
+				p: encryptedClientMessage,
+				c: clientId
+			}, this.serverShared);
+			if (!this.isOpen() || encryptedMessageForServer.length === 0 || encryptedMessageForServer.length > (8 * 1024 * 1024)) {
+				return (false)
+			}
+			this.connection.send(encryptedMessageForServer);
+			return (true)
+		} catch (error) {
+			this.logEvent('sendClientMessage', error, 'error')
 		}
 		return (false)
 	}

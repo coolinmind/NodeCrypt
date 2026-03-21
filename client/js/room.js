@@ -7,7 +7,8 @@ import {
 import {
 	renderChatArea,
 	addSystemMsg,
-	updateChatInputStyle
+	updateChatInputStyle,
+	refreshReadStateForActiveRoom
 } from './chat.js';
 import {
 	renderMainHeader,
@@ -21,6 +22,12 @@ import {
 	createElement
 } from './util.dom.js';
 import { t } from './util.i18n.js';
+import {
+	getRecentTargetSessionIds,
+	isReliableMessageType,
+	READ_STATUS_GRACE_PERIOD,
+	RECONNECT_GRACE_PERIOD,
+} from './util.message.js';
 let roomsData = [];
 let activeRoomIndex = -1;
 // 存储当前正在输入的用户集合
@@ -37,6 +44,12 @@ export function getNewRoomData() {
 		myUserName: '',
 		chat: null,
 		messages: [],
+		messageMap: {},
+		seenMessageIds: new Set(),
+		pendingReadQueue: new Set(),
+		pendingReliableMessages: {},
+		participantSessions: {},
+		readStatusRefreshTimer: null,
 		prevUserList: [],
 		knownUserIds: new Set(),
 		unreadCount: 0,
@@ -59,6 +72,7 @@ export function switchRoom(index) {
 	renderMainHeader();
 	renderUserList(false);
 	renderChatArea();
+	markVisibleMessagesAsRead(index);
 	updateChatInputStyle()
 }
 
@@ -157,13 +171,27 @@ export function handleClientList(idx, list, selfId) {
 	rd.userList = list;
 	rd.userMap = {};
 	list.forEach(u => {
-		rd.userMap[u.clientId] = u
+		rd.userMap[u.clientId] = u;
+		updateParticipantSession(rd, u.clientId, u.sessionId, true)
 	});
+	for (const clientId in rd.participantSessions) {
+		if (!rd.userMap[clientId]) {
+			const entry = rd.participantSessions[clientId];
+			if (entry && entry.isOnline) {
+				entry.isOnline = false;
+				entry.lastSeenAt = Date.now();
+			}
+		}
+	}
 	rd.myId = selfId;
+	recalculateRoomReadTargets(rd);
 	if (activeRoomIndex === idx) {
 		renderUserList(false);
-		renderMainHeader()
+		renderMainHeader();
+		refreshReadStateForActiveRoom();
+		flushPendingReads(idx)
 	}
+	retryPendingReliableMessages(idx)
 	rd.initCount = (rd.initCount || 0) + 1;
 	if (rd.initCount === 2) {
 		rd.isInitialized = true;
@@ -176,7 +204,13 @@ export function handleClientList(idx, list, selfId) {
 export function handleClientSecured(idx, user) {
 	const rd = roomsData[idx];
 	if (!rd) return;
+	if (rd.readStatusRefreshTimer && typeof window !== 'undefined') {
+		window.clearTimeout(rd.readStatusRefreshTimer);
+		rd.readStatusRefreshTimer = null;
+	}
 	rd.userMap[user.clientId] = user;
+	updateParticipantSession(rd, user.clientId, user.sessionId, true);
+	recalculateRoomReadTargets(rd);
 	const existingUserIndex = rd.userList.findIndex(u => u.clientId === user.clientId);
 	if (existingUserIndex === -1) {
 		rd.userList.push(user)
@@ -185,8 +219,11 @@ export function handleClientSecured(idx, user) {
 	}
 	if (activeRoomIndex === idx) {
 		renderUserList(false);
-		renderMainHeader()
+		renderMainHeader();
+		refreshReadStateForActiveRoom();
+		flushPendingReads(idx)
 	}
+	retryPendingReliableMessages(idx)
 	if (!rd.isInitialized) {
 		return
 	}
@@ -210,6 +247,12 @@ export function handleClientSecured(idx, user) {
 export function handleClientLeft(idx, clientId) {
 	const rd = roomsData[idx];
 	if (!rd) return;
+	if (rd.participantSessions[clientId]) {
+		rd.participantSessions[clientId].isOnline = false;
+		rd.participantSessions[clientId].lastSeenAt = Date.now();
+	}
+	recalculateRoomReadTargets(rd);
+	scheduleReadStatusRefresh(idx, READ_STATUS_GRACE_PERIOD + 50);
 	if (rd.privateChatTargetId === clientId) {
 		rd.privateChatTargetId = null;
 		rd.privateChatTargetName = null;
@@ -303,7 +346,8 @@ export function handleClientLeft(idx, clientId) {
 	delete rd.userMap[clientId];
 	if (activeRoomIndex === idx) {
 		renderUserList(false);
-		renderMainHeader()
+		renderMainHeader();
+		refreshReadStateForActiveRoom()
 	}
 }
 
@@ -312,6 +356,9 @@ export function handleClientLeft(idx, clientId) {
 export function handleClientMessage(idx, msg) {
 	const newRd = roomsData[idx];
 	if (!newRd) return;
+	if (msg.clientId && msg.sessionId) {
+		updateParticipantSession(newRd, msg.clientId, msg.sessionId, true)
+	}
 
 	// Prevent processing own messages unless it's a private message sent to oneself
 	if (msg.clientId === newRd.myId && msg.userName === newRd.myUserName && !msg.type.includes('_private')) {
@@ -333,6 +380,19 @@ export function handleClientMessage(idx, msg) {
 			updateTypingStatus(realUserName, msg.data);
 		}
 		return; // Typing messages are fully handled.
+	}
+
+	if (msgType === 'read_receipt' && msg.data && msg.data.messageId) {
+		applyReadReceipt(newRd, msg.data.messageId, msg.data.sessionId || msg.senderSessionId || msg.sessionId);
+		if (activeRoomIndex === idx) {
+			refreshReadStateForActiveRoom();
+		}
+		return;
+	}
+
+	if (msgType === 'delivery_receipt' && msg.data && msg.data.messageId) {
+		applyDeliveryReceipt(newRd, msg.data.messageId, msg.data.sessionId || msg.senderSessionId || msg.sessionId);
+		return;
 	}
 
 	// Handle file messages
@@ -358,7 +418,9 @@ export function handleClientMessage(idx, msg) {
 						userName: realUserName,
 						avatar: realUserName,
 						msgType: historyMsgType,
-						timestamp: (msg.data && msg.data.timestamp) || Date.now() 
+						timestamp: (msg.data && msg.data.timestamp) || msg.timestamp || Date.now(),
+						messageId: msg.messageId || (msg.data && msg.data.messageId) || null,
+						senderSessionId: msg.senderSessionId || msg.sessionId || null
 					});
 				}
 			}
@@ -383,6 +445,12 @@ export function handleClientMessage(idx, msg) {
 				renderRooms(activeRoomIndex);
 			}
 		}
+		maybeQueueReadReceipt(idx, {
+			messageId: msg.messageId || (msg.data && msg.data.messageId) || null,
+			senderClientId: msg.clientId,
+			senderSessionId: msg.senderSessionId || msg.sessionId || null,
+			msgType
+		});
 		return; // File messages are fully handled.
 	}
 
@@ -403,29 +471,240 @@ export function handleClientMessage(idx, msg) {
 	}
 
 	// Add message to messages array for chat history
-	roomsData[idx].messages.push({
+	const incomingMessageId = msg.messageId || (msg.data && msg.data.messageId) || null;
+	if (incomingMessageId && isReliableMessageType(msgType)) {
+		sendDeliveryReceipt(idx, {
+			messageId: incomingMessageId,
+			senderClientId: msg.clientId,
+			senderSessionId: msg.senderSessionId || msg.sessionId || null
+		});
+	}
+	if (incomingMessageId && newRd.seenMessageIds.has(incomingMessageId)) {
+		maybeQueueReadReceipt(idx, {
+			messageId: incomingMessageId,
+			senderClientId: msg.clientId,
+			senderSessionId: msg.senderSessionId || msg.sessionId || null,
+			msgType
+		});
+		return;
+	}
+	if (incomingMessageId) {
+		newRd.seenMessageIds.add(incomingMessageId)
+	}
+	const storedMessage = {
 		type: 'other',
 		text: msg.data,
 		userName: realUserName,
 		avatar: realUserName,
 		msgType: msgType,
-		timestamp: Date.now()
-	});
+		timestamp: msg.timestamp || Date.now(),
+		messageId: incomingMessageId,
+		senderSessionId: msg.senderSessionId || msg.sessionId || null
+	};
+	roomsData[idx].messages.push(storedMessage);
+	if (incomingMessageId) {
+		newRd.messageMap[incomingMessageId] = storedMessage
+	}
 
 	// Only add message to chat display if it's for the active room
 	if (activeRoomIndex === idx) {
 		if (window.addOtherMsg) {
-			window.addOtherMsg(msg.data, realUserName, realUserName, false, msgType);
+			window.addOtherMsg(msg.data, realUserName, realUserName, false, msgType, storedMessage.timestamp, storedMessage);
 		}
 	} else {
 		roomsData[idx].unreadCount = (roomsData[idx].unreadCount || 0) + 1;
 		renderRooms(activeRoomIndex);
 	}
+	maybeQueueReadReceipt(idx, {
+		messageId: incomingMessageId,
+		senderClientId: msg.clientId,
+		senderSessionId: msg.senderSessionId || msg.sessionId || null,
+		msgType
+	});
 
 	const notificationMsgType = msgType.includes('_private') ? `private ${msgType.split('_')[0]}` : msgType;
 	if (window.notifyMessage) {
 		window.notifyMessage(newRd.roomName, notificationMsgType, msg.data, realUserName);
 	}
+}
+
+export function updateParticipantSession(rd, clientId, sessionId, isOnline) {
+	if (!rd || !clientId) return;
+	const current = rd.participantSessions[clientId] || {};
+	rd.participantSessions[clientId] = {
+		clientId,
+		sessionId: sessionId || current.sessionId || null,
+		isOnline: typeof isOnline === 'boolean' ? isOnline : current.isOnline || false,
+		lastSeenAt: Date.now()
+	};
+}
+
+export function recalculateRoomReadTargets(rd, now = Date.now()) {
+	if (!rd) return;
+	const mySessionId = rd.chat && rd.chat.clientSessionId ? rd.chat.clientSessionId : null;
+	const activeTargetSessions = getRecentTargetSessionIds(rd.participantSessions, mySessionId, now, READ_STATUS_GRACE_PERIOD);
+	rd.messages.forEach(message => {
+		if (message.type === 'me' && !message.msgType?.includes('_private')) {
+			message.targetSessionIds = activeTargetSessions;
+			message.readSessionIds = (message.readSessionIds || []).filter(sessionId => activeTargetSessions.includes(sessionId));
+		}
+	});
+	if (typeof activeRoomIndex === 'number' && roomsData[activeRoomIndex] === rd) {
+		refreshReadStateForActiveRoom();
+	}
+}
+
+export function scheduleReadStatusRefresh(idx, delay = READ_STATUS_GRACE_PERIOD) {
+	const rd = roomsData[idx];
+	if (!rd || typeof window === 'undefined') return;
+	if (rd.readStatusRefreshTimer) {
+		window.clearTimeout(rd.readStatusRefreshTimer);
+	}
+	rd.readStatusRefreshTimer = window.setTimeout(() => {
+		rd.readStatusRefreshTimer = null;
+		recalculateRoomReadTargets(rd);
+	}, delay);
+}
+
+export function applyReadReceipt(rd, messageId, sessionId) {
+	if (!rd || !messageId || !sessionId) return;
+	const targetMessage = rd.messageMap[messageId] || rd.messages.find(message => message.messageId === messageId);
+	if (!targetMessage || targetMessage.type !== 'me') return;
+	if (!Array.isArray(targetMessage.readSessionIds)) {
+		targetMessage.readSessionIds = []
+	}
+	if (!targetMessage.readSessionIds.includes(sessionId)) {
+		targetMessage.readSessionIds.push(sessionId)
+	}
+}
+
+export function applyDeliveryReceipt(rd, messageId, sessionId) {
+	if (!rd || !messageId || !sessionId) return;
+	const pendingMessage = rd.pendingReliableMessages[messageId];
+	if (!pendingMessage) return;
+	pendingMessage.deliveredSessionIds = pendingMessage.deliveredSessionIds || [];
+	if (!pendingMessage.deliveredSessionIds.includes(sessionId)) {
+		pendingMessage.deliveredSessionIds.push(sessionId)
+	}
+	pendingMessage.pendingSessionIds = (pendingMessage.pendingSessionIds || []).filter(targetSessionId => targetSessionId !== sessionId);
+	if (pendingMessage.pendingSessionIds.length === 0) {
+		delete rd.pendingReliableMessages[messageId]
+	}
+}
+
+export function registerPendingReliableMessage(idx, messageRecord) {
+	const rd = roomsData[idx];
+	if (!rd || !messageRecord || !messageRecord.messageId || !isReliableMessageType(messageRecord.msgType)) return;
+	rd.pendingReliableMessages[messageRecord.messageId] = {
+		messageId: messageRecord.messageId,
+		msgType: messageRecord.msgType,
+		text: messageRecord.text,
+		timestamp: messageRecord.timestamp,
+		targetSessionIds: [...(messageRecord.targetSessionIds || [])],
+		pendingSessionIds: [...(messageRecord.targetSessionIds || [])],
+		deliveredSessionIds: [],
+		lastSentAt: Date.now()
+	}
+}
+
+export function maybeQueueReadReceipt(idx, messageInfo) {
+	const rd = roomsData[idx];
+	if (!rd || !messageInfo || !messageInfo.messageId || messageInfo.msgType?.includes('_private')) return;
+	if (activeRoomIndex === idx && typeof document !== 'undefined' && document.visibilityState === 'visible') {
+		sendReadReceipt(idx, messageInfo);
+		return;
+	}
+	rd.pendingReadQueue.add(JSON.stringify({
+		messageId: messageInfo.messageId,
+		senderClientId: messageInfo.senderClientId,
+		senderSessionId: messageInfo.senderSessionId || null
+	}))
+}
+
+export function flushPendingReads(idx) {
+	const rd = roomsData[idx];
+	if (!rd || activeRoomIndex !== idx || typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+	const pendingEntries = Array.from(rd.pendingReadQueue);
+	pendingEntries.forEach(entry => {
+		try {
+			sendReadReceipt(idx, JSON.parse(entry));
+			rd.pendingReadQueue.delete(entry)
+		} catch (error) {
+			return;
+		}
+	})
+}
+
+export function sendReadReceipt(idx, messageInfo) {
+	const rd = roomsData[idx];
+	if (!rd || !rd.chat || !messageInfo || !messageInfo.messageId || !messageInfo.senderClientId) return false;
+	const sessionId = rd.chat.clientSessionId || null;
+	const result = rd.chat.sendClientMessage(messageInfo.senderClientId, 'read_receipt', {
+		messageId: messageInfo.messageId,
+		sessionId
+	}, {
+		messageId: messageInfo.messageId,
+		timestamp: Date.now(),
+		senderSessionId: sessionId
+	});
+	return result;
+}
+
+export function sendDeliveryReceipt(idx, messageInfo) {
+	const rd = roomsData[idx];
+	if (!rd || !rd.chat || !messageInfo || !messageInfo.messageId || !messageInfo.senderClientId) return false;
+	const sessionId = rd.chat.clientSessionId || null;
+	return rd.chat.sendClientMessage(messageInfo.senderClientId, 'delivery_receipt', {
+		messageId: messageInfo.messageId,
+		sessionId
+	}, {
+		messageId: messageInfo.messageId,
+		timestamp: Date.now(),
+		senderSessionId: sessionId
+	});
+}
+
+export function retryPendingReliableMessages(idx) {
+	const rd = roomsData[idx];
+	if (!rd || !rd.chat) return;
+	const now = Date.now();
+	const activeClientIds = new Set(Object.keys(rd.userMap));
+	Object.keys(rd.pendingReliableMessages).forEach(messageId => {
+		const pendingMessage = rd.pendingReliableMessages[messageId];
+		if (!pendingMessage) return;
+		const readyTargets = Object.values(rd.participantSessions)
+			.filter(session => session && session.sessionId && pendingMessage.pendingSessionIds.includes(session.sessionId) && session.isOnline && activeClientIds.has(session.clientId));
+		if (readyTargets.length === 0) {
+			return;
+		}
+		if ((now - (pendingMessage.lastSentAt || 0)) < 1000) {
+			return;
+		}
+		readyTargets.forEach(target => {
+			rd.chat.sendClientMessage(target.clientId, pendingMessage.msgType, pendingMessage.text, {
+				messageId: pendingMessage.messageId,
+				timestamp: pendingMessage.timestamp,
+				senderSessionId: rd.chat.clientSessionId
+			})
+		});
+		pendingMessage.lastSentAt = now
+	})
+}
+
+export function markVisibleMessagesAsRead(idx = activeRoomIndex) {
+	if (idx < 0) return;
+	flushPendingReads(idx)
+}
+
+if (typeof document !== 'undefined') {
+	document.addEventListener('visibilitychange', () => {
+		if (document.visibilityState === 'visible') {
+			markVisibleMessagesAsRead(activeRoomIndex)
+		}
+	});
+	window.addEventListener('focus', () => {
+		markVisibleMessagesAsRead(activeRoomIndex)
+	})
 }
 
 // Update typing status in UI

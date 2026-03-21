@@ -26,6 +26,9 @@ import {
 import {
 	t
 } from './util.i18n.js';
+import {
+	getReadProgress
+} from './util.message.js';
 
 // Render the chat area
 // 渲染聊天区域
@@ -38,29 +41,37 @@ export function renderChatArea() {
 	}
 	chatArea.innerHTML = '';
 	roomsData[activeRoomIndex].messages.forEach(m => {
-		if (m.type === 'me') addMsg(m.text, true, m.msgType || 'text', m.timestamp);
+		if (m.type === 'me') addMsg(m.text, true, m.msgType || 'text', m.timestamp, m);
 		else if (m.type === 'system') addSystemMsg(m.text, true, m.timestamp);
-		else addOtherMsg(m.text, m.userName, m.avatar, true, m.msgType || 'text', m.timestamp)
+		else addOtherMsg(m.text, m.userName, m.avatar, true, m.msgType || 'text', m.timestamp, m)
 	})
 }
 
 // Add a message to the chat area
 // 添加消息到聊天区域
-export function addMsg(text, isHistory = false, msgType = 'text', timestamp = null) {
+export function addMsg(text, isHistory = false, msgType = 'text', timestamp = null, messageRecord = null) {
 	let ts = isHistory ? timestamp : (timestamp || Date.now());
 	if (!ts) return;
 	if (!isHistory && activeRoomIndex >= 0) {
-		roomsData[activeRoomIndex].messages.push({
+		const nextMessage = messageRecord || {
 			type: 'me',
 			text,
 			msgType,
 			timestamp: ts
-		})
-	}	const chatArea = $id('chat-area');
+		};
+		roomsData[activeRoomIndex].messages.push(nextMessage);
+		if (nextMessage.messageId) {
+			roomsData[activeRoomIndex].messageMap[nextMessage.messageId] = nextMessage
+		}
+		messageRecord = nextMessage
+	}
+	const chatArea = $id('chat-area');
 	if (!chatArea) return;
 	let className = 'bubble me' + (msgType.includes('_private') ? ' private-message' : '');
 	const date = new Date(ts);
-	const time = date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');	let contentHtml = '';	if (msgType === 'image' || msgType === 'image_private') {
+	const time = date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');
+	let contentHtml = '';
+	if (msgType === 'image' || msgType === 'image_private') {
 		// Handle image messages (can contain both text and images)
 		if (typeof text === 'object' && text.images && Array.isArray(text.images)) {
 			// New multi-image format: {text: "", images: ["data:image...", "data:image..."]}
@@ -112,14 +123,17 @@ export function addMsg(text, isHistory = false, msgType = 'text', timestamp = nu
 	}
 	const div = createElement('div', {
 		class: className
-	}, `<span class="bubble-content">${contentHtml}</span><span class="bubble-meta">${time}</span>`);
+	}, `<span class="bubble-content">${contentHtml}</span>${renderBubbleMeta(time, messageRecord)}`);
+	if (messageRecord && messageRecord.messageId) {
+		div.dataset.messageId = messageRecord.messageId
+	}
 	chatArea.appendChild(div);
 	chatArea.scrollTop = chatArea.scrollHeight
 }
 
 // Add a message from another user to the chat area
 // 添加来自其他用户的消息到聊天区域
-export function addOtherMsg(msg, userName = '', avatar = '', isHistory = false, msgType = 'text', timestamp = null) {
+export function addOtherMsg(msg, userName = '', avatar = '', isHistory = false, msgType = 'text', timestamp = null, messageRecord = null) {
 	if (!userName && activeRoomIndex >= 0) {
 		const rd = roomsData[activeRoomIndex];
 		// 优先使用文件消息自带的 userName 字段
@@ -136,7 +150,9 @@ export function addOtherMsg(msg, userName = '', avatar = '', isHistory = false, 
 	if (!chatArea) return;
 	const bubbleWrap = createElement('div', {
 		class: 'bubble-other-wrap'
-	});	let contentHtml = '';	if (msgType === 'image' || msgType === 'image_private') {
+	});
+	let contentHtml = '';
+	if (msgType === 'image' || msgType === 'image_private') {
 		// Handle image messages (can contain both text and images)
 		if (typeof msg === 'object' && msg.images && Array.isArray(msg.images)) {
 			// New multi-image format: {text: "", images: ["data:image...", "data:image..."]}
@@ -193,7 +209,11 @@ export function addOtherMsg(msg, userName = '', avatar = '', isHistory = false, 
 	if (msgType === 'file' || msgType === 'file_private') {
 		bubbleClasses += ' file-bubble';
 	}
-	bubbleWrap.innerHTML = `<span class="avatar"></span><div class="bubble-other-main"><div class="${bubbleClasses}"><div class="bubble-other-name">${safeUserName}</div><span class="bubble-content">${contentHtml}</span><span class="bubble-meta">${time}</span></div></div>`;
+	bubbleWrap.innerHTML = `<span class="avatar"></span><div class="bubble-other-main"><div class="${bubbleClasses}"><div class="bubble-other-name">${safeUserName}</div><span class="bubble-content">${contentHtml}</span>${renderBubbleMeta(time, messageRecord)}</div></div>`;
+	const bubble = $('.bubble', bubbleWrap);
+	if (bubble && messageRecord && messageRecord.messageId) {
+		bubble.dataset.messageId = messageRecord.messageId
+	}
 	const svg = createAvatarSVG(userName);
 	const avatarEl = $('.avatar', bubbleWrap);
 	if (avatarEl) {
@@ -202,6 +222,58 @@ export function addOtherMsg(msg, userName = '', avatar = '', isHistory = false, 
 	}
 	chatArea.appendChild(bubbleWrap);
 	chatArea.scrollTop = chatArea.scrollHeight
+}
+
+function renderBubbleMeta(time, messageRecord) {
+	if (!messageRecord || messageRecord.type !== 'me' || messageRecord.msgType?.includes('_private')) {
+		return `<span class="bubble-meta">${time}</span>`
+	}
+	const progress = getReadProgress(messageRecord.targetSessionIds || [], messageRecord.readSessionIds || []);
+	const wrapClass = `bubble-meta bubble-meta-read${progress.allRead ? ' all-read' : ''}${progress.read > 0 && !progress.allRead ? ' partially-read' : ''}`;
+	const label = progress.total > 0 ? `${progress.read}/${progress.total}` : '0/0';
+	const indicator = renderReadStatusIndicator(progress);
+	return `<span class="${wrapClass}"><span class="bubble-time">${time}</span><span class="read-status" title="${label}" aria-label="Read ${label}">${indicator}</span></span>`
+}
+
+function renderReadStatusIndicator(progress) {
+	if (progress.allRead) {
+		return '<span class="read-status-indicator read-status-complete" aria-hidden="true"><svg viewBox="0 0 16 16" class="read-status-svg read-status-complete-svg"><circle cx="8" cy="8" r="7" class="read-status-ring-full"></circle><path d="M4 8.2l2.2 2.3L12 4.8" class="read-status-check-path"></path></svg></span>'
+	}
+	const sectorPath = buildReadSectorPath(progress.total > 0 ? (progress.read / progress.total) : 0);
+	const sectorMarkup = sectorPath ? `<path d="${sectorPath}" class="read-status-sector"></path>` : '';
+	return `<span class="read-status-indicator" aria-hidden="true"><svg viewBox="0 0 16 16" class="read-status-svg"><circle cx="8" cy="8" r="7" class="read-status-ring"></circle>${sectorMarkup}</svg></span>`
+}
+
+function buildReadSectorPath(progressRatio) {
+	if (!(progressRatio > 0)) return '';
+	const clamped = Math.min(progressRatio, 0.999999);
+	const center = 8;
+	const radius = 5;
+	const startAngle = -Math.PI / 2;
+	const endAngle = startAngle + (Math.PI * 2 * clamped);
+	const startX = center + radius * Math.cos(startAngle);
+	const startY = center + radius * Math.sin(startAngle);
+	const endX = center + radius * Math.cos(endAngle);
+	const endY = center + radius * Math.sin(endAngle);
+	const largeArcFlag = clamped > 0.5 ? 1 : 0;
+	return `M ${center} ${center} L ${startX.toFixed(3)} ${startY.toFixed(3)} A ${radius} ${radius} 0 ${largeArcFlag} 1 ${endX.toFixed(3)} ${endY.toFixed(3)} Z`
+}
+
+export function refreshReadStateForActiveRoom() {
+	if (activeRoomIndex < 0) return;
+	const rd = roomsData[activeRoomIndex];
+	if (!rd) return;
+	rd.messages.forEach(message => {
+		if (!message.messageId || message.type !== 'me' || message.msgType?.includes('_private')) return;
+		const bubble = document.querySelector(`.bubble.me[data-message-id="${message.messageId}"]`);
+		if (!bubble) return;
+		const meta = bubble.querySelector('.bubble-meta');
+		if (meta) {
+			const date = new Date(message.timestamp);
+			const time = date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');
+			meta.outerHTML = renderBubbleMeta(time, message)
+		}
+	})
 }
 
 // Add a system message to the chat area

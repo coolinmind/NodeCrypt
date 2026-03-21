@@ -53,6 +53,13 @@ import {
 	activeRoomIndex,   // 当前激活的房间索引 / Index of the active room
 	joinRoom           // 加入房间的函数 / Function to join a room
 } from './room.js';
+import {
+	createMessageId,
+	getRecentTargetSessionIds
+} from './util.message.js';
+import {
+	registerPendingReliableMessage
+} from './room.js';
 
 // 从 chat.js 中导入聊天功能相关的函数
 // Import chat-related functions from chat.js
@@ -244,6 +251,10 @@ window.addEventListener('DOMContentLoaded', () => {
 		const rd = roomsData[activeRoomIndex]; // 当前房间数据 / Current room data
 		
 		if (rd && rd.chat) {
+			const messageId = createMessageId();
+			const sentAt = Date.now();
+			const senderSessionId = rd.chat.clientSessionId;
+			const targetSessionIds = getRecentTargetSessionIds(rd.participantSessions, senderSessionId);
 			if (images.length > 0) {
 				// 发送包含图片的消息 (支持多图和文字合并)
 				// Send message with images (supports multiple images and text combined)
@@ -257,27 +268,44 @@ window.addEventListener('DOMContentLoaded', () => {
 					// Encrypt and send private image message
 					const targetClient = rd.chat.channel[rd.privateChatTargetId];
 					if (targetClient && targetClient.shared) {
-						const clientMessagePayload = {
-							a: 'm',
-							t: 'image_private',
-							d: messageContent
+						rd.chat.sendClientMessage(rd.privateChatTargetId, 'image_private', messageContent, {
+							messageId,
+							timestamp: sentAt,
+							senderSessionId
+						});
+						const sentMessage = {
+							type: 'me',
+							text: messageContent,
+							msgType: 'image_private',
+							timestamp: sentAt,
+							messageId,
+							targetSessionIds: targetClient.sessionId ? [targetClient.sessionId] : [],
+							readSessionIds: []
 						};
-						const encryptedClientMessage = rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
-						const serverRelayPayload = {
-							a: 'c',
-							p: encryptedClientMessage,
-							c: rd.privateChatTargetId
-						};
-						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);						rd.chat.sendMessage(encryptedMessageForServer);
-						addMsg(messageContent, false, 'image_private');
+						addMsg(messageContent, false, 'image_private', sentAt, sentMessage);
+						registerPendingReliableMessage(activeRoomIndex, sentMessage);
 					} else {
 						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 					}
 				} else {
 					// 公共频道图片消息发送
 					// Send image message to public channel
-					rd.chat.sendChannelMessage('image', messageContent);
-					addMsg(messageContent, false, 'image');
+					rd.chat.sendChannelMessage('image', messageContent, {
+						messageId,
+						timestamp: sentAt,
+						senderSessionId
+					});
+					const sentMessage = {
+						type: 'me',
+						text: messageContent,
+						msgType: 'image',
+						timestamp: sentAt,
+						messageId,
+						targetSessionIds,
+						readSessionIds: []
+					};
+					addMsg(messageContent, false, 'image', sentAt, sentMessage);
+					registerPendingReliableMessage(activeRoomIndex, sentMessage);
 				}
 				
 				imagePasteHandler.clearImages(); // 清除所有图片预览
@@ -289,27 +317,45 @@ window.addEventListener('DOMContentLoaded', () => {
 					// Encrypt and send private message
 					const targetClient = rd.chat.channel[rd.privateChatTargetId];
 					if (targetClient && targetClient.shared) {
-						const clientMessagePayload = {
-							a: 'm',
-							t: 'text_private',
-							d: text
+						rd.chat.sendClientMessage(rd.privateChatTargetId, 'text_private', text, {
+							messageId,
+							timestamp: sentAt,
+							senderSessionId
+						});
+						const sentMessage = {
+							type: 'me',
+							text,
+							msgType: 'text_private',
+							timestamp: sentAt,
+							messageId,
+							targetSessionIds: targetClient.sessionId ? [targetClient.sessionId] : [],
+							readSessionIds: []
 						};
-						const encryptedClientMessage = rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
-						const serverRelayPayload = {
-							a: 'c',
-							p: encryptedClientMessage,
-							c: rd.privateChatTargetId
-						};
-						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
-						rd.chat.sendMessage(encryptedMessageForServer);					addMsg(text, false, 'text_private');
+						addMsg(text, false, 'text_private', sentAt, sentMessage);
+						registerPendingReliableMessage(activeRoomIndex, sentMessage);
 					} else {
 						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 					}
 				} else {
 					// 公共频道消息发送
 					// Send public message
-					rd.chat.sendChannelMessage('text', text);
-					addMsg(text);				}
+					rd.chat.sendChannelMessage('text', text, {
+						messageId,
+						timestamp: sentAt,
+						senderSessionId
+					});
+					const sentMessage = {
+						type: 'me',
+						text,
+						msgType: 'text',
+						timestamp: sentAt,
+						messageId,
+						targetSessionIds,
+						readSessionIds: []
+					};
+					addMsg(text, false, 'text', sentAt, sentMessage);
+					registerPendingReliableMessage(activeRoomIndex, sentMessage);
+				}
 			}
 			
 			// 清空输入框并触发 input 事件
@@ -338,41 +384,58 @@ window.addEventListener('DOMContentLoaded', () => {
 		onSend: (message) => {
 			const rd = roomsData[activeRoomIndex];
 			if (rd && rd.chat) {
+				const messageId = createMessageId();
+				const sentAt = Date.now();
+				const senderSessionId = rd.chat.clientSessionId;
+				const targetSessionIds = getRecentTargetSessionIds(rd.participantSessions, senderSessionId);
 				const userName = rd.myUserName || '';
-				const msgWithUser = { ...message, userName };
+				const msgWithUser = { ...message, userName, messageId, timestamp: sentAt };
 				if (rd.privateChatTargetId) {
 					// 私聊文件加密并发送
 					// Encrypt and send private file message
 					const targetClient = rd.chat.channel[rd.privateChatTargetId];
 					if (targetClient && targetClient.shared) {
-						const clientMessagePayload = {
-							a: 'm',
-							t: msgWithUser.type + '_private',
-							d: msgWithUser
-						};
-						const encryptedClientMessage = rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
-						const serverRelayPayload = {
-							a: 'c',
-							p: encryptedClientMessage,
-							c: rd.privateChatTargetId
-						};
-						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
-						rd.chat.sendMessage(encryptedMessageForServer);
+						rd.chat.sendClientMessage(rd.privateChatTargetId, msgWithUser.type + '_private', msgWithUser, {
+							messageId,
+							timestamp: sentAt,
+							senderSessionId
+						});
 						
 						// 添加到自己的聊天记录
 						if (msgWithUser.type === 'file_start') {
-							addMsg(msgWithUser, false, 'file_private');
+							addMsg(msgWithUser, false, 'file_private', sentAt, {
+								type: 'me',
+								text: msgWithUser,
+								msgType: 'file_private',
+								timestamp: sentAt,
+								messageId,
+								targetSessionIds: targetClient.sessionId ? [targetClient.sessionId] : [],
+								readSessionIds: []
+							});
 						}					} else {
 						addSystemMsg(`${t('system.private_file_failed', 'Cannot send private file to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 					}
 				} else {
 					// 公共频道文件发送
 					// Send file to public channel
-					rd.chat.sendChannelMessage(msgWithUser.type, msgWithUser);
+					rd.chat.sendChannelMessage(msgWithUser.type, msgWithUser, {
+						messageId,
+						timestamp: sentAt,
+						senderSessionId
+					});
 					
 					// 添加到自己的聊天记录
 					if (msgWithUser.type === 'file_start') {
-						addMsg(msgWithUser, false, 'file');
+						const sentMessage = {
+							type: 'me',
+							text: msgWithUser,
+							msgType: 'file',
+							timestamp: sentAt,
+							messageId,
+							targetSessionIds,
+							readSessionIds: []
+						};
+						addMsg(msgWithUser, false, 'file', sentAt, sentMessage);
 					}
 				}
 			}		}

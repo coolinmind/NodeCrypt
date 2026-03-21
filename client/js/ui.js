@@ -23,6 +23,9 @@ import {
 	t
 } from './util.i18n.js';
 import {
+	normalizeRoomName
+} from './util.room.js';
+import {
 	updateChatInputStyle
 } from './chat.js';
 
@@ -422,7 +425,8 @@ export function loginFormHandler(modal) {
 			btn = document.querySelector('#login-form .login-btn');
 			roomInput = document.getElementById('roomName')
 		}
-		const exists = roomsData.some(rd => rd.roomName && rd.roomName.toLowerCase() === roomName.toLowerCase());
+		const normalizedRoomName = normalizeRoomName(roomName);
+		const exists = roomsData.some(rd => normalizeRoomName(rd.roomName) === normalizedRoomName);
 		if (roomInput) {
 			roomInput.style.border = '';
 			roomInput.style.background = '';
