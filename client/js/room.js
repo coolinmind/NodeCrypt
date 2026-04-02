@@ -108,6 +108,96 @@ export function renderRooms(activeId = 0) {
 	})
 }
 
+function showLoginReentryState(prefill = {}) {
+	const loginContainer = $id('login-container');
+	const chatContainer = $id('chat-container');
+
+	if (chatContainer) {
+		chatContainer.style.display = 'none';
+	}
+
+	if (loginContainer) {
+		loginContainer.style.display = '';
+	}
+
+	if (typeof document !== 'undefined' && document.body) {
+		document.body.classList.add('login-page')
+	}
+
+	if (typeof window !== 'undefined') {
+		window.dispatchEvent(new Event('regenerateLoginForm'))
+	}
+
+	const userInput = $id('userName');
+	const roomInput = $id('roomName');
+	const passwordInput = $id('password');
+
+	if (userInput) {
+		userInput.value = prefill.userName || '';
+		userInput.readOnly = false;
+		userInput.style.background = '';
+		userInput.style.border = '';
+	}
+
+	if (roomInput) {
+		roomInput.value = prefill.roomName || '';
+		roomInput.readOnly = false;
+		roomInput.style.background = '';
+		roomInput.style.border = '';
+	}
+
+	if (passwordInput) {
+		passwordInput.value = prefill.password || '';
+		passwordInput.readOnly = false;
+		passwordInput.style.background = '';
+		passwordInput.style.color = '';
+		passwordInput.placeholder = '';
+	}
+
+	if (userInput && userInput.parentNode) {
+		const oldWarnTip = userInput.parentNode.querySelector('.kick-reentry-tip');
+		if (oldWarnTip) {
+			oldWarnTip.remove()
+		}
+
+		if (prefill.warningMessage) {
+			const warnTip = createElement('div', {
+				class: 'kick-reentry-tip'
+			});
+			warnTip.style.color = '#e74c3c';
+			warnTip.style.fontSize = '13px';
+			warnTip.style.marginTop = '4px';
+			warnTip.textContent = prefill.warningMessage;
+			userInput.parentNode.appendChild(warnTip)
+		}
+
+		userInput.focus()
+	}
+}
+
+function removeRoom(roomRef, options = {}) {
+	const roomIndex = roomsData.indexOf(roomRef);
+	const targetRoom = roomIndex >= 0 ? roomsData[roomIndex] : null;
+	if (!targetRoom) {
+		showLoginReentryState(options);
+		return false
+	}
+
+	const chatInst = targetRoom.chat;
+	if (chatInst && typeof chatInst.destruct === 'function') {
+		chatInst.destruct()
+	} else if (chatInst && typeof chatInst.disconnect === 'function') {
+		chatInst.disconnect()
+	}
+
+	targetRoom.chat = null;
+	roomsData.splice(roomIndex, 1);
+
+	activeRoomIndex = -1;
+	showLoginReentryState(options);
+	return false
+}
+
 // Join a room
 // 加入一个房间
 export function joinRoom(userName, roomName, password, modal = null, onResult) {
@@ -123,8 +213,24 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 	setSidebarAvatar(userName);
 	let closed = false;
 	const callbacks = {
-		onServerClosed: () => {
-			setStatus('Node connection closed');
+		onServerClosed: (reason) => {
+			const closedMessage = reason === 'duplicate_username' ?
+				t('system.duplicate_username_kicked', 'You were removed because this room does not allow duplicate usernames.') :
+				'Node connection closed';
+			if (typeof setStatus === 'function') {
+				setStatus(closedMessage)
+			}
+			if (reason === 'duplicate_username') {
+				if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+					window.alert(closedMessage)
+				}
+				removeRoom(newRd, {
+					userName: '',
+					roomName,
+					password,
+					warningMessage: closedMessage
+				})
+			}
 			if (onResult && !closed) {
 				closed = true;
 				onResult(false)

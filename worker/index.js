@@ -147,7 +147,9 @@ export class ChatRoom {  constructor(state, env) {
       seen: getTime(),
       key: null,
       shared: null,
-      channel: null
+      channel: null,
+      username: null,
+      sessionId: null
     };
 
     // Send RSA public key
@@ -244,7 +246,13 @@ export class ChatRoom {  constructor(state, env) {
     connection.addEventListener('close', async (event) => {
       logEvent('close', [clientId, event], 'debug');
 
-      const channel = this.clients[clientId].channel;
+      const currentClient = this.clients[clientId];
+
+      if (!currentClient) {
+        return;
+      }
+
+      const channel = currentClient.channel;
 
       if (channel && this.channels[channel]) {
         this.channels[channel].splice(this.channels[channel].indexOf(clientId), 1);
@@ -294,6 +302,8 @@ export class ChatRoom {  constructor(state, env) {
 
       if (action === 'j') {
         this.handleJoinChannel(clientId, decrypted);
+      } else if (action === 'n') {
+        this.handleUsernameClaim(clientId, decrypted);
       } else if (action === 'c') {
         this.handleClientMessage(clientId, decrypted);
       } else if (action === 'w') {
@@ -327,6 +337,85 @@ export class ChatRoom {  constructor(state, env) {
 
     } catch (error) {
       logEvent('message-join', [clientId, error], 'error');
+    }
+  }
+
+  normalizeUsername(value) {
+    if (!isString(value) || !value.match(/\S+/)) {
+      return null;
+    }
+
+    return value.replace(/^\s+/, '').replace(/\s+$/, '');
+  }
+
+  sendKickNotice(client, reason) {
+    if (!client || !client.connection || !client.shared || !isString(reason)) {
+      return;
+    }
+
+    this.sendMessage(client.connection, encryptMessage({
+      a: 'k',
+      p: reason
+    }, client.shared));
+  }
+
+  handleUsernameClaim(clientId, decrypted) {
+    const client = this.clients[clientId];
+
+    if (!client || !client.channel) {
+      return;
+    }
+
+    try {
+      let claimedName = null;
+      let claimedSessionId = null;
+
+      if (isString(decrypted.p)) {
+        claimedName = this.normalizeUsername(decrypted.p);
+      } else if (isObject(decrypted.p)) {
+        claimedName = this.normalizeUsername(decrypted.p.name);
+
+        if (isString(decrypted.p.sessionId) && decrypted.p.sessionId.match(/\S+/)) {
+          claimedSessionId = decrypted.p.sessionId.replace(/^\s+/, '').replace(/\s+$/, '');
+        }
+      }
+
+      if (!claimedName) {
+        return;
+      }
+
+      client.username = claimedName;
+      client.sessionId = claimedSessionId;
+
+      const channel = client.channel;
+      const members = this.channels[channel];
+
+      if (!members) {
+        return;
+      }
+
+      const duplicateClientIds = members.filter((memberId) => {
+        if (memberId === clientId) {
+          return false;
+        }
+
+        const memberClient = this.clients[memberId];
+        return memberClient && this.normalizeUsername(memberClient.username) === claimedName;
+      });
+
+      for (const duplicateClientId of duplicateClientIds) {
+        const duplicateClient = this.clients[duplicateClientId];
+
+        if (!this.isClientInChannel(duplicateClient, channel)) {
+          continue;
+        }
+
+        this.sendKickNotice(duplicateClient, 'duplicate_username');
+        this.closeConnection(duplicateClient.connection, 4001, 'duplicate_username');
+      }
+
+    } catch (error) {
+      logEvent('message-name', [clientId, error], 'error');
     }
   }
   // Handle client messages
@@ -434,9 +523,14 @@ export class ChatRoom {  constructor(state, env) {
       logEvent('sendMessage', error, 'error');
     }
   }  // Close connection helper
-  closeConnection(connection) {
+  closeConnection(connection, code, reason) {
     try {
-      connection.close();    } catch (error) {
+      if (typeof code === 'number' && isString(reason)) {
+        connection.close(code, reason);
+      } else {
+        connection.close();
+      }
+    } catch (error) {
       logEvent('closeConnection', error, 'error');
     }
   }

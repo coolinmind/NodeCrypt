@@ -609,6 +609,9 @@ window.addEventListener('regenerateLoginForm', () => {
 	const loginFormContainer = document.getElementById('login-form');
 	if (loginFormContainer) {
 		loginFormContainer.innerHTML = generateLoginForm(false);
+		preventSpaceInput(loginFormContainer.querySelector('#userName'));
+		preventSpaceInput(loginFormContainer.querySelector('#roomName'));
+		preventSpaceInput(loginFormContainer.querySelector('#password'));
 	}
 });
 

@@ -110,7 +110,9 @@ wss.on('connection', (connection) => {
 		connection: connection,
 		seen: getTime(),
 		key: null,
-		channel: null
+		channel: null,
+		username: null,
+		sessionId: null
 	};
 
 	try {
@@ -195,7 +197,13 @@ wss.on('connection', (connection) => {
 		logEvent('close', [clientId, event], 'debug');
 
 
-		const channel = clients[clientId].channel;
+		const currentClient = clients[clientId];
+
+		if (!currentClient) {
+			return;
+		}
+
+		const channel = currentClient.channel;
 
 		if (
 			channel &&
@@ -281,6 +289,8 @@ const processEncryptedMessage = (clientId, message) => {
 
 		if (action === 'j') {
 			handleJoinChannel(clientId, decrypted);
+		} else if (action === 'n') {
+			handleUsernameClaim(clientId, decrypted);
 		} else if (action === 'c') {
 			handleClientMessage(clientId, decrypted);
 		} else if (action === 'w') {
@@ -319,6 +329,85 @@ const handleJoinChannel = (clientId, decrypted) => {
 
 	} catch (error) {
 		logEvent('message-join', [clientId, error], 'error');
+	}
+};
+
+const normalizeUsername = (value) => {
+	if (!isString(value) || !value.match(/\S+/)) {
+		return null;
+	}
+
+	return value.replace(/^\s+/, '').replace(/\s+$/, '');
+};
+
+const sendKickNotice = (client, reason) => {
+	if (!client || !client.connection || !client.shared || !isString(reason)) {
+		return;
+	}
+
+	sendMessage(client.connection, encryptMessage({
+		a: 'k',
+		p: reason
+	}, client.shared));
+};
+
+const handleUsernameClaim = (clientId, decrypted) => {
+	const client = clients[clientId];
+
+	if (!client || !client.channel) {
+		return;
+	}
+
+	try {
+		let claimedName = null;
+		let claimedSessionId = null;
+
+		if (isString(decrypted.p)) {
+			claimedName = normalizeUsername(decrypted.p);
+		} else if (isObject(decrypted.p)) {
+			claimedName = normalizeUsername(decrypted.p.name);
+
+			if (isString(decrypted.p.sessionId) && decrypted.p.sessionId.match(/\S+/)) {
+				claimedSessionId = decrypted.p.sessionId.replace(/^\s+/, '').replace(/\s+$/, '');
+			}
+		}
+
+		if (!claimedName) {
+			return;
+		}
+
+		client.username = claimedName;
+		client.sessionId = claimedSessionId;
+
+		const channel = client.channel;
+		const members = channels[channel];
+
+		if (!members) {
+			return;
+		}
+
+		const duplicateClientIds = members.filter((memberId) => {
+			if (memberId === clientId) {
+				return false;
+			}
+
+			const memberClient = clients[memberId];
+			return memberClient && normalizeUsername(memberClient.username) === claimedName;
+		});
+
+		for (const duplicateClientId of duplicateClientIds) {
+			const duplicateClient = clients[duplicateClientId];
+
+			if (!isClientInChannel(duplicateClient, channel)) {
+				continue;
+			}
+
+			sendKickNotice(duplicateClient, 'duplicate_username');
+			closeConnection(duplicateClient.connection, 4001, 'duplicate_username');
+		}
+
+	} catch (error) {
+		logEvent('message-name', [clientId, error], 'error');
 	}
 };
 
@@ -455,9 +544,13 @@ const generateClientId = () => {
 };
 
 
-const closeConnection = (connection) => {
+const closeConnection = (connection, code, reason) => {
 	try {
-		connection.close();
+		if (typeof code === 'number' && isString(reason)) {
+			connection.close(code, reason);
+		} else {
+			connection.close();
+		}
 	} catch (error) {
 		logEvent('closeConnection', error, 'error');
 	}

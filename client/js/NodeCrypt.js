@@ -52,6 +52,7 @@ class NodeCrypt {
 		this.serverKeys = null;
 		this.serverShared = null;
 		this.credentials = null;
+		this.closedReason = null;
 		this.connection = null;
 		this.reconnect = null;
 		this.ping = null;
@@ -108,6 +109,7 @@ class NodeCrypt {
 		this.stopPing();
 		this.serverKeys = null;
 		this.serverShared = null;
+		this.closedReason = null;
 		this.channel = {};
 		try {
 			this.connection = new WebSocket(this.config.wsAddress);
@@ -146,6 +148,7 @@ class NodeCrypt {
 		this.serverKeys = null;
 		this.serverShared = null;
 		this.credentials = null;
+		this.closedReason = null;
 		this.connection.onopen = null;
 		this.connection.onmessage = null;
 		this.connection.onerror = null;
@@ -227,6 +230,13 @@ class NodeCrypt {
 						a: 'j',
 						p: this.credentials.channel
 					}, this.serverShared));
+					this.sendMessage(this.encryptServerMessage({
+						a: 'n',
+						p: {
+							name: this.credentials.username,
+							sessionId: this.clientSessionId
+						}
+					}, this.serverShared));
 					if (this.callbacks.onServerSecured) {
 						try {
 							this.callbacks.onServerSecured()
@@ -243,6 +253,20 @@ class NodeCrypt {
 		const serverDecrypted = this.decryptServerMessage(event.data, this.serverShared);
 		this.logEvent('onMessage-server-decrypted', serverDecrypted);
 		if (!this.isObject(serverDecrypted) || !this.isString(serverDecrypted.a)) {
+			return
+		}
+		if (serverDecrypted.a === 'k' && this.isString(serverDecrypted.p)) {
+			this.closedReason = serverDecrypted.p;
+			this.credentials = null;
+			this.stopReconnect();
+			this.stopPing();
+			if (!this.isClosed()) {
+				try {
+					this.connection.close()
+				} catch (error) {
+					this.logEvent('onMessage-kick', error, 'error')
+				}
+			}
 			return
 		}
 		if (serverDecrypted.a === 'l' && this.isArray(serverDecrypted.p)) {
@@ -396,7 +420,7 @@ class NodeCrypt {
 		}
 		if (this.callbacks.onServerClosed) {
 			try {
-				this.callbacks.onServerClosed()
+				this.callbacks.onServerClosed(this.closedReason)
 			} catch (error) {
 				this.logEvent('onError-server-closed-callback', error, 'error')
 			}
@@ -407,13 +431,16 @@ class NodeCrypt {
 	// WebSocket 关闭事件处理
 	async onClose(event) {
 		this.logEvent('onClose', event);
+		if (!this.closedReason && event && this.isString(event.reason) && event.reason.match(/\S+/)) {
+			this.closedReason = event.reason.replace(/^\s+/, '').replace(/\s+$/, '')
+		}
 		this.disconnect();
 		if (this.credentials) {
 			this.startReconnect()
 		}
 		if (this.callbacks.onServerClosed) {
 			try {
-				this.callbacks.onServerClosed()
+				this.callbacks.onServerClosed(this.closedReason)
 			} catch (error) {
 				this.logEvent('onClose-server-closed-callback', error, 'error')
 			}
